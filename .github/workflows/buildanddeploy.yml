@@ -1,0 +1,51 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - 'main'
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build Image
+        run: docker build -t local/registration-bot:$GITHUB_RUN_NUMBER .
+      - name: Save Image
+        run: docker save --output registration-bot.tar local/registration-bot:$GITHUB_RUN_NUMBER
+      - name: Archive Image
+        uses: actions/upload-artifact@v3
+        with:
+          name: image
+          path: |
+            registration-bot.tar
+  deploy:
+    runs-on: self-hosted
+    needs: build
+    steps:
+      - name: Download dist Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: image
+      - name: Login to Docker
+        run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+      - name: Load Docker Image
+        run: docker load --input registration-bot.tar
+      - name: Tag Image Workflow Num
+        run: docker tag local/registration-bot:$GITHUB_RUN_NUMBER ${{ secrets.DOCKER_USERNAME }}/registration-bot:$GITHUB_RUN_NUMBER
+      - name: Tag Image Latest
+        run: docker tag local/registration-bot:$GITHUB_RUN_NUMBER ${{ secrets.DOCKER_USERNAME }}/registration-bot:latest
+      - name: Push Workflow Rev Image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/registration-bot:$GITHUB_RUN_NUMBER
+      - name: Push Latest Image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/registration-bot:latest
+      - name: Logout of Docker
+        run: docker logout
+  manage:
+    runs-on: self-hosted
+    needs: deploy
+    steps:
+      - uses: actions/checkout@v3
+      - name: Start the manage workflow
+        run: bin/manage_dispatch.sh ${{ secrets.MANAGE_DISPATCH_TOKEN }}

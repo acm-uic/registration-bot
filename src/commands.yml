@@ -1,0 +1,26 @@
+---
+commands:
+  - name: register
+    type: 1
+    description: "Join ACM!"
+    options:
+      - type: 3
+        name: netid
+        description: "Your UIC NetID"
+        required: true
+      - type: 3
+        name: first_name
+        description: "Your first name"
+        required: true
+      - type: 3
+        name: last_name
+        description: "Your last name"
+        required: true
+      - type: 3
+        name: email
+        description: "Your contact email"
+        required: true
+      - type: 3
+        name: national_id
+        description: "Your national ACM id (If you have one)"
+        required: false
