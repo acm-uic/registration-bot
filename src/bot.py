@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 
-import asyncio
-import websockets
+import websocket
 import string
-import random
 import requests
 import json
 import threading
 import ctypes
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from time import time
+from time import time,sleep
 from yaml import safe_load
 from os import environ
 from dotenv import load_dotenv
@@ -78,16 +77,10 @@ class Options(NamedTuple):
     notion_database: str
     metrics_host: str = "localhost"
     port: int = 8080
+    debug: bool = False
     gateway: str = "wss://gateway.discord.gg/?v=10&encoding=json"
 
-class Bot:
-    auth_header = {}
-    identify = {}
-    latest_seq = 0
-    sock = {}
-    last_ack = 0
-    opts = {}
-    running = False
+class Bot(threading.Thread):
 
     def __init__(self, opts: Options):
         """ Initialize the bot class
@@ -97,6 +90,8 @@ class Bot:
         opts : Options
             The options object
         """
+        threading.Thread.__init__(self)
+        self.latest_seq = 0
         self.opts = opts
         self.auth_header = {'Authorization': f"Bot {opts.token}", 'Content-Type': 'application/json'}
         self.identify = {'op': 2, 'd': {
@@ -108,8 +103,16 @@ class Bot:
                 'device': 'acm-bot'
                 }
             }}
-        self.running = True
     
+    def run(self):
+        self.last_ack = time()
+        self.sock = websocket.WebSocketApp(self.opts.gateway,
+                    on_message = lambda ws,msg: self.message_handler(ws, msg),
+                    on_close   = lambda ws, code, msg:     self.on_close(ws, code, msg),
+                    on_error   = lambda err:    print(err),
+                    on_open    = lambda ws:     self.on_open(ws))
+        self.sock.run_forever()
+
     def update_slash_cmds(self, filename: str, opts: Options):
         """ Updates slash commands
 
@@ -126,7 +129,7 @@ class Bot:
             r = requests.post(f"{opts.api_url}/applications/{opts.client_id}/commands", headers=self.auth_header, json=command)
             r.raise_for_status()
 
-    async def register_user(self, interaction_id: str, interaction_token: str, options: dict, discord_id: str):
+    def register_user(self, interaction_id: str, interaction_token: str, options: dict, discord_id: str):
         """ Registers user with AD
 
         Parameters
@@ -137,7 +140,7 @@ class Bot:
         discord_id : str
             The Discord id of the user
         """
-        notion = Notion(self.opts.notion_token, self.opts.notion_database)
+        notion = Notion(self.opts.notion_token, self.opts.notion_database, self.opts.debug)
         notion.create_user(options[1]['value'], options[2]['value'], options[0]['value'], options[4]['value'] if len(options) > 4 else '', options[3]['value'], discord_id)
         r = requests.post(f"{self.opts.api_url}/interactions/{interaction_id}/{interaction_token}/callback", json={'type': 4, 'data': {'content': "You have been registered!", "flags": 64}})
         if r.status_code > 299:
@@ -145,7 +148,7 @@ class Bot:
             failed_interactions += 1
             print(f"Failed to respond to interation: Code: {r.status_code} Error: {r.text}")
 
-    async def message_handler(self, msg: str):
+    def message_handler(self, ws, msg: str):
         """ Handles gateway events
 
         Parameters
@@ -153,6 +156,8 @@ class Bot:
         msg : str
             The gateway message
         """
+        if self.opts.debug:
+            print(msg)
         global last_update
         last_update = time()
         msg = json.loads(msg)
@@ -164,48 +169,50 @@ class Bot:
             if t == "READY":
                 print("Application Registered")
             elif t == "INTERACTION_CREATE" and data['type'] == 2:
-                asyncio.create_task(self.register_user(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
+                #asyncio.create_task(self.register_user(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
+                x = threading.Thread(target=self.register_user, args=(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
+                x.start()
         elif msg['op'] == 1:
-            await self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
+            self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
         elif msg['op'] == 9:
             # We have been killed, f
             exit(-1)
         elif msg['op'] == 10:
-            await self.sock.send(json.dumps(self.identify))
-            asyncio.create_task(self.__heartbeat(msg['d']['heartbeat_interval']))
+            self.sock.send(json.dumps(self.identify))
+            #asyncio.create_task(self.__heartbeat(msg['d']['heartbeat_interval']))
+            x = threading.Thread(target=self.__heartbeat, args=(msg['d']['heartbeat_interval'],))
+            x.start()
             self.last_ack = time()
         elif msg['op'] == 11:
             self.last_ack = time()
 
 
-    async def connect(self, gateway: str):
+    def on_open(self, ws):
         """ Connect to api gateway
 
         Parameters
         ----------
-        gateway : str
-            The api gateway ws address
+        ws : websocket
+            The active websocket
         """
-        async for websocket in websockets.connect(gateway):
-            print("Starting Discord Bot...")
-            self.sock = websocket
-            self.latest_seq = 0
-            self.last_ack = 0
-            try:
-                while self.running:
-                    message = await self.sock.recv()
-                    await self.message_handler(message)
-            except websockets.ConnectionClosed:
-                break
+        
+        print("Starting Discord Bot...")
+        self.latest_seq = 0
+        self.last_ack = 0
 
-    async def shutdown(self):
+    def on_close(self, ws, code, msg):
         """ Shutdown Discord Bot
         """
-        self.running = False
-        await self.sock.close()
-        await self.sock.wait_closed()
+        print(f"Bot WS Closed with Code: {code}")
+
+    def shutdown(self):
+        print("Shutting Down WS...")
+        def run(*args):
+            self.sock.close()
+
+        threading.Thread(target=run).start()
     
-    async def __heartbeat(self, interval: int):
+    def __heartbeat(self, interval: int):
         """Refresh the websocket after each interval passes
         
         Parameters
@@ -214,14 +221,14 @@ class Bot:
             The heartbeat interval
         """
         interval_s = interval / 1000
-        while self.running:
-            await asyncio.sleep(interval_s)
+        while True:
+            sleep(interval_s)
             if (time() - self.last_ack) > interval_s*2:
                 exit(-1)
-            await self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
+            self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
 
 class Notion:
-    def __init__(self, token: str, database: str):
+    def __init__(self, token: str, database: str, debug: bool = False):
         """ Initialize the Notion class
         
         Parameters
@@ -230,6 +237,8 @@ class Notion:
             The notion api key
         database : str
             The notion database id
+        debug : bool
+            Whether to use debug output
         """
         self.token = token
         self.database = database
@@ -327,24 +336,26 @@ class LivenessAndMetricsServer(threading.Thread):
         """
         self.webServer.shutdown()
 
-async def main():
+def main():
     load_dotenv()
-    opts = Options(environ["API_URL"], environ["CLIENT_ID"], environ["BOTTOK"], environ["NOTION_API"], environ["NOTION_DATABASE"], environ.get("METRICS_HOST", "localhost"), environ.get("PORT", 8080))
-    bot = Bot(opts)
+    opts = Options(environ["API_URL"], environ["CLIENT_ID"], environ["BOTTOK"], environ["NOTION_API"], environ["NOTION_DATABASE"], environ.get("METRICS_HOST", "localhost"), environ.get("PORT", 8080), environ.get("DEBUG", "false") == "true")
+    if opts.debug:
+        print(sys.version)
     livenessandmetrics = LivenessAndMetricsServer(opts.metrics_host, opts.port)
     livenessandmetrics.start()
-    async def handle_shutdown(): 
-        # This may actually take a little while (up to 45 seconds I think), but be careful this could cause it not to die properly
+    bot = Bot(opts)
+    bot.daemon = True
+    bot.update_slash_cmds('commands.yml', opts)
+    bot.start()
+    def handle_shutdown(signum, frame): 
         print("Stopping...")
-        await bot.shutdown()
-        print("Bot Stopped")
+        bot.shutdown()
+        print("Bot Stopped.")
         livenessandmetrics.raise_exception()
         livenessandmetrics.join()
-        print("Metrics Server Stopped")
-    signal(SIGINT, lambda signum, frame: asyncio.create_task(handle_shutdown()))
-    signal(SIGTERM, lambda signum, frame: asyncio.create_task(handle_shutdown()))
-    bot.update_slash_cmds('commands.yml', opts)
-    await bot.connect(opts.gateway)
+        print("Metrics Server Stopped.")
+    signal(SIGINT, handle_shutdown)
+    signal(SIGTERM, handle_shutdown)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
