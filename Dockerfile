@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY ./src/ /app
 
-RUN useradd -u 1000 -m bot
+RUN adduser -u 1000 --disabled-password bot
 
 USER bot
 RUN pip3 install -r requirements.txt
