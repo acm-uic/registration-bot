@@ -42,10 +42,3 @@ jobs:
         run: docker push ${{ secrets.DOCKER_USERNAME }}/registration-bot:latest
       - name: Logout of Docker
         run: docker logout
-  manage:
-    runs-on: self-hosted
-    needs: deploy
-    steps:
-      - uses: actions/checkout@v3
-      - name: Start the manage workflow
-        run: bin/manage_dispatch.sh ${{ secrets.MANAGE_DISPATCH_TOKEN }}
