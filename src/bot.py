@@ -15,10 +15,11 @@ from dotenv import load_dotenv
 from typing import NamedTuple
 from signal import signal,SIGINT,SIGTERM
 
-users_created = 0;
-last_update = 0;
-failed_interactions = 0;
-failed_db_updates = 0;
+users_created = 0
+last_update = 0
+failed_interactions = 0
+failed_db_updates = 0
+running = True
 
 class LivenessAndMetrics(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -109,7 +110,7 @@ class Bot(threading.Thread):
         self.sock = websocket.WebSocketApp(self.opts.gateway,
                     on_message = lambda ws,msg: self.message_handler(ws, msg),
                     on_close   = lambda ws, code, msg:     self.on_close(ws, code, msg),
-                    on_error   = lambda err:    print(err),
+                    on_error   = lambda wsapp, err:    print(err),
                     on_open    = lambda ws:     self.on_open(ws))
         self.sock.run_forever()
 
@@ -170,8 +171,9 @@ class Bot(threading.Thread):
                 print("Application Registered")
             elif t == "INTERACTION_CREATE" and data['type'] == 2:
                 #asyncio.create_task(self.register_user(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
-                x = threading.Thread(target=self.register_user, args=(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
-                x.start()
+                if data['name'] == "register":
+                    x = threading.Thread(target=self.register_user, args=(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
+                    x.start()
         elif msg['op'] == 1:
             self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
         elif msg['op'] == 9:
@@ -203,7 +205,7 @@ class Bot(threading.Thread):
     def on_close(self, ws, code, msg):
         """ Shutdown Discord Bot
         """
-        print(f"Bot WS Closed with Code: {code}")
+        print(f"Bot WS Closed with Code: {code}\nMessage: {msg}")
 
     def shutdown(self):
         print("Shutting Down WS...")
@@ -221,11 +223,20 @@ class Bot(threading.Thread):
             The heartbeat interval
         """
         interval_s = interval / 1000
+        global running
         while True:
             sleep(interval_s)
+            if not running:
+                break
             if (time() - self.last_ack) > interval_s*2:
-                exit(-1)
-            self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
+                running = False
+                break
+            try:
+                self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
+            except websocket._exceptions.WebSocketConnectionClosedException:
+                print("Websocket was closed unexpectedly, restarting...")
+                running = False
+                break
 
 class Notion:
     def __init__(self, token: str, database: str, debug: bool = False):
@@ -344,18 +355,24 @@ def main():
     livenessandmetrics = LivenessAndMetricsServer(opts.metrics_host, opts.port)
     livenessandmetrics.start()
     bot = Bot(opts)
-    bot.daemon = True
     bot.update_slash_cmds('commands.yml', opts)
     bot.start()
     def handle_shutdown(signum, frame): 
-        print("Stopping...")
-        bot.shutdown()
-        print("Bot Stopped.")
-        livenessandmetrics.raise_exception()
-        livenessandmetrics.join()
-        print("Metrics Server Stopped.")
+        global running
+        running = False
     signal(SIGINT, handle_shutdown)
     signal(SIGTERM, handle_shutdown)
+    while True:
+        if not running:
+            print("Stopping...")
+            bot.shutdown()
+            print("Bot Stopped.")
+            livenessandmetrics.raise_exception()
+            livenessandmetrics.join()
+            print("Metrics Server Stopped.")
+            print("Waiting for the other threads to finish...")
+            break
+        sleep(0)
 
 if __name__ == "__main__":
     main()
