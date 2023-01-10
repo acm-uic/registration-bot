@@ -109,7 +109,7 @@ class Bot(threading.Thread):
         self.sock = websocket.WebSocketApp(self.opts.gateway,
                     on_message = lambda ws,msg: self.message_handler(ws, msg),
                     on_close   = lambda ws, code, msg:     self.on_close(ws, code, msg),
-                    on_error   = lambda ws, err:    print(err),
+                    on_error   = lambda err:    print(err),
                     on_open    = lambda ws:     self.on_open(ws))
         self.sock.run_forever()
 
@@ -170,9 +170,8 @@ class Bot(threading.Thread):
                 print("Application Registered")
             elif t == "INTERACTION_CREATE" and data['type'] == 2:
                 #asyncio.create_task(self.register_user(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
-                if data['name'] == "register":
-                    x = threading.Thread(target=self.register_user, args=(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
-                    x.start()
+                x = threading.Thread(target=self.register_user, args=(data['id'], data['token'], data['data']['options'], data['member']['user']['id']))
+                x.start()
         elif msg['op'] == 1:
             self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
         elif msg['op'] == 9:
@@ -182,7 +181,6 @@ class Bot(threading.Thread):
             self.sock.send(json.dumps(self.identify))
             #asyncio.create_task(self.__heartbeat(msg['d']['heartbeat_interval']))
             x = threading.Thread(target=self.__heartbeat, args=(msg['d']['heartbeat_interval'],))
-            x.daemon = True
             x.start()
             self.last_ack = time()
         elif msg['op'] == 11:
@@ -205,7 +203,7 @@ class Bot(threading.Thread):
     def on_close(self, ws, code, msg):
         """ Shutdown Discord Bot
         """
-        print(f"Bot WS Closed with Code: {code}\nMessage: {msg}")
+        print(f"Bot WS Closed with Code: {code}")
 
     def shutdown(self):
         print("Shutting Down WS...")
@@ -226,14 +224,8 @@ class Bot(threading.Thread):
         while True:
             sleep(interval_s)
             if (time() - self.last_ack) > interval_s*2:
-                break
-            try:
-                 self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
-            except websocket._exceptions.WebSocketConnectionClosedException:
-                 print("Websocket was closed unexpectedly.")
-                 global last_update
-                 last_update = 0
-                 break
+                exit(-1)
+            self.sock.send(json.dumps({'op': 1, 'd': self.latest_seq}))
 
 class Notion:
     def __init__(self, token: str, database: str, debug: bool = False):
