@@ -373,7 +373,7 @@ def main():
             print("Metrics Server Stopped.")
             print("Waiting for the other threads to finish...")
             break
-        sleep(0)
+        sleep(1)
 
 if __name__ == "__main__":
     main()
